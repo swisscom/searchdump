@@ -335,7 +335,10 @@ func (s *Search) versionMajor() int {
 	https://www.elastic.co/guide/en/elasticsearch/reference/6.8/search-request-scroll.html
 */
 func (s *Search) fetchAndSend(index string, c chan<- file.File) {
-	size := 50
+	size := s.params.Size
+	if size <= 0 {
+		size = 50
+	}
 	offset := 0
 
 	s.logger.Infof("fetching index %s", index)
