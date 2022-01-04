@@ -9,6 +9,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/sirupsen/logrus"
 	"github.com/swisscom/searchdump/pkg/file"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -217,7 +218,7 @@ func (s *Search) fetch(index string, size int, offset int) ([]Document, error) {
 	return documents, nil
 }
 
-func (s *Search) fetchAndSend(index string, c chan <- file.File) {
+func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 	size := 50
 	offset := 0
 
@@ -225,22 +226,33 @@ func (s *Search) fetchAndSend(index string, c chan <- file.File) {
 
 	var indexContent []Document
 	currentRetry := 0
-	maxRetries := 4
+	maxRetries := 2
 
 	for {
 		entries, err := s.fetch(index, size, offset)
 		if err != nil {
 			searchServerError, ok := err.(SearchServerError)
 			if currentRetry == maxRetries {
-				s.logger.Fatalf("search server error: cannot proceed further, our last retry failed: %v", searchServerError)
+				s.logger.Errorf(
+					"search server error: cannot proceed further, our last retry failed: %v. Skipping %s",
+					searchServerError,
+					index,
+				)
+				return
 			}
 			if ok {
-				s.logger.Warnf("search server error: %v, retrying (%d/%d)",
+				s.logger.Warnf("search server error: %v, retrying offset=%d, size=%d (%d/%d)",
 					searchServerError,
+					offset,
+					size,
 					currentRetry,
 					maxRetries,
 				)
 				currentRetry++
+
+				// Sleep for e^(currentRetry) seconds
+				d := time.Duration(math.Round(math.Pow(math.E, float64(currentRetry)))) * time.Second
+				time.Sleep(d)
 				continue
 			}
 			s.logger.Fatalf("unable to fetch: index=%s, size=%d, offset=%d: %v", index, size, offset, err)
@@ -266,7 +278,7 @@ func (s *Search) fetchAndSend(index string, c chan <- file.File) {
 	}
 }
 
-func (s *Search) do(ch chan <- file.File, indices []string) {
+func (s *Search) do(ch chan<- file.File, indices []string) {
 	for _, i := range indices {
 		// Fetch data
 		s.fetchAndSend(i, ch)
