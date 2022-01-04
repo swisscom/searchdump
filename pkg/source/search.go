@@ -206,6 +206,8 @@ func (s *Search) fetchAndSend(index string, c chan <- file.File) {
 	size := 50
 	offset := 0
 
+	s.logger.Infof("fetching index %s", index)
+
 	var indexContent []Document
 	for {
 		entries, err := s.fetch(index, size, offset)

@@ -24,11 +24,11 @@ var args struct {
 
 func main() {
 	logger := logrus.New()
+
+	arg.MustParse(&args)
 	if args.Debug != nil {
 		logger.SetLevel(logrus.DebugLevel)
 	}
-
-	arg.MustParse(&args)
 	client := searchdump.New()
 	client.SetLogger(logger)
 	err := client.SetFrom(args.FromType, args.From)

@@ -60,7 +60,7 @@ func (c *Client) Start() error {
 			c.logger.Fatalf("unable to write file %s", f.Name)
 			break
 		}
-		c.logger.Debugf("wrote %s", f.Name)
+		c.logger.Infof("wrote %s", f.Name)
 	}
 
 
