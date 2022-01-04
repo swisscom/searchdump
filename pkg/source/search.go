@@ -9,6 +9,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/sirupsen/logrus"
 	"github.com/swisscom/searchdump/pkg/file"
+	"net/http"
 	"net/url"
 	"sort"
 	"time"
@@ -175,6 +176,16 @@ type Result struct {
 	Hits     Hits `json:"hits"`
 }
 
+type SearchServerError struct {
+	StatusCode int
+}
+
+func (s SearchServerError) Error() string {
+	return fmt.Sprintf("server returned %d", s.StatusCode)
+}
+
+var _ error = (*SearchServerError)(nil)
+
 func (s *Search) fetch(index string, size int, offset int) ([]Document, error) {
 	c := context.Background()
 	res, err := esapi.SearchRequest{
@@ -184,6 +195,10 @@ func (s *Search) fetch(index string, size int, offset int) ([]Document, error) {
 	}.Do(c, s.client)
 	if err != nil {
 		return nil, err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return nil, SearchServerError{StatusCode: res.StatusCode}
 	}
 
 	var result Result
@@ -209,11 +224,30 @@ func (s *Search) fetchAndSend(index string, c chan <- file.File) {
 	s.logger.Infof("fetching index %s", index)
 
 	var indexContent []Document
+	currentRetry := 0
+	maxRetries := 4
+
 	for {
 		entries, err := s.fetch(index, size, offset)
 		if err != nil {
+			searchServerError, ok := err.(SearchServerError)
+			if currentRetry == maxRetries {
+				s.logger.Fatalf("search server error: cannot proceed further, our last retry failed: %v", searchServerError)
+			}
+			if ok {
+				s.logger.Warnf("search server error: %v, retrying (%d/%d)",
+					searchServerError,
+					currentRetry,
+					maxRetries,
+				)
+				currentRetry++
+				continue
+			}
 			s.logger.Fatalf("unable to fetch: index=%s, size=%d, offset=%d: %v", index, size, offset, err)
 		}
+
+		currentRetry = 0
+
 		if len(entries) == 0 {
 			break
 		}
