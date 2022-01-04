@@ -1,0 +1,7 @@
+applications:
+  - name: searchdump
+    docker:
+      image: tools-docker-local.artifactory.swisscom.com/swisscom/searchdump:1.0.0
+    health-check-type: process
+    no-route: true
+    command: tail -f /dev/null
