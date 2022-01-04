@@ -1,7 +1,9 @@
 package source
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,7 +72,7 @@ func (s *Search) fetchSearchInfo() error {
 	dec := json.NewDecoder(res.Body)
 	err = dec.Decode(&esInfo)
 
-	if err != nil {
+	if err == nil {
 		s.searchInfo = &esInfo
 	}
 
@@ -118,7 +120,7 @@ func NewSearch(from string, params *SearchParams, logger *logrus.Logger) (*Searc
 	} else {
 		s.params = SearchParams{
 			IndexFilter: "",
-			Size: 50,
+			Size:        50,
 		}
 	}
 
@@ -201,14 +203,19 @@ type HitsTotal struct {
 	Relation string `json:"relation"`
 }
 
-type Document map[string]interface{}
+type DocumentContent map[string]interface{}
+
+type Document struct {
+	Id      string
+	Content DocumentContent
+}
 
 type HitsEntry struct {
-	Index  string   `json:"_index"`
-	Type   string   `json:"_type"`
-	Id     string   `json:"_id"`
-	Score  float64  `json:"_score"`
-	Source Document `json:"_source"`
+	Index  string          `json:"_index"`
+	Type   string          `json:"_type"`
+	Id     string          `json:"_id"`
+	Score  float64         `json:"_score"`
+	Source DocumentContent `json:"_source"`
 }
 
 type Hits struct {
@@ -283,7 +290,10 @@ func (s *Search) fetch(index string, size int, scrollId string) ([]Document, str
 	var documents []Document
 
 	for _, e := range result.Hits.HitsEntries {
-		documents = append(documents, e.Source)
+		documents = append(documents, Document{
+			Id:      e.Id,
+			Content: e.Source,
+		})
 	}
 
 	return documents, result.ScrollId, nil
@@ -330,7 +340,14 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 
 	s.logger.Infof("fetching index %s", index)
 
-	var indexContent []Document
+	var buff []byte
+	outWriter := bytes.NewBuffer(buff)
+	gw, err := gzip.NewWriterLevel(outWriter, gzip.BestCompression)
+	if err != nil {
+		s.logger.Errorf("unable to create gzip for %s", index)
+	}
+	tw := tar.NewWriter(gw)
+
 	currentRetry := 0
 	maxRetries := 2
 
@@ -368,24 +385,43 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 			}
 			s.logger.Fatalf("unable to fetch: index=%s, size=%d, offset=%d: %v", index, size, offset, err)
 		}
-
 		currentRetry = 0
-
 		if len(entries) == 0 {
 			break
 		}
-		indexContent = append(indexContent, entries...)
+
+		for _, e := range entries {
+			content, err := json.Marshal(e.Content)
+			if err != nil {
+				s.logger.Errorf("unable to marshal content of document %s: %v", e.Id, err)
+				continue
+			}
+			err = tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeReg,
+				Name:     fmt.Sprintf("%s.json", e.Id),
+				Size:     int64(len(content)),
+			})
+			if err != nil {
+				s.logger.Errorf("unable to write header for %s: %v", e.Id, err)
+				continue
+			}
+
+			_, err = tw.Write(content)
+			if err != nil {
+				s.logger.Errorf("unable to write file %s: %v", e.Id, err)
+				continue
+			}
+		}
+
 		offset += size
 	}
 
-	marshal, err := json.Marshal(&indexContent)
-	if err != nil {
-		s.logger.Fatalf("unable to marshal JSON: %v", err)
-	}
+	tw.Close()
+	gw.Close()
 
 	c <- file.File{
-		Name:    fmt.Sprintf("%s.json", index),
-		Content: bytes.NewReader(marshal),
+		Name:    fmt.Sprintf("%s.tar.gz", index),
+		Content: outWriter,
 	}
 }
 
