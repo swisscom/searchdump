@@ -5,6 +5,7 @@ import (
 	"github.com/sirupsen/logrus"
 	searchdump "github.com/swisscom/searchdump/pkg"
 	"github.com/swisscom/searchdump/pkg/dest"
+	"github.com/swisscom/searchdump/pkg/source"
 )
 
 var args struct {
@@ -14,6 +15,11 @@ var args struct {
 	ToType   string `arg:"-T,--to-type,required"`
 	Debug    *bool  `arg:"-D,--debug"`
 
+	// Search specific options
+	SearchIndexFilter string `arg:"--search-index-filter,env:SEARCHDUMP_SEARCH_INDEX_FILTER"`
+	SearchSize        int    `arg:"--search-size,env:SEARCHDUMP_SEARCH_SIZE" default:"50"`
+
+	// S3 specific options
 	S3AccessKey       string `arg:"--s3-access-key,env:SEARCHDUMP_S3_ACCESS_KEY"`
 	S3SecretAccessKey string `arg:"--s3-secret-access-key,env:SEARCHDUMP_S3_SECRET_ACCESS_KEY"`
 	S3Namespace       string `arg:"--s3-namespace,env:SEARCHDUMP_S3_NAMESPACE"`
@@ -31,7 +37,22 @@ func main() {
 	}
 	client := searchdump.New()
 	client.SetLogger(logger)
-	err := client.SetFrom(args.FromType, args.From)
+
+	var err error
+
+	switch args.FromType {
+	case "search", "elasticsearch", "opensearch":
+		err = client.SetFrom(args.FromType, args.From, &source.SearchParams{
+		IndexFilter: args.SearchIndexFilter,
+		Size: args.SearchSize,
+	})
+	default:
+		logger.Fatalf("%s not recognized", args.FromType)
+	}
+
+	if err != nil {
+		logger.Fatalf("unable to set from: %v", err)
+	}
 
 	if args.ToType == "s3" {
 		forcePathStyle := false
@@ -47,7 +68,7 @@ func main() {
 			Namespace:       args.S3Namespace,
 			ForcePathStyle:  forcePathStyle,
 			Region:          args.S3Region,
-			Url: args.To,
+			Url:             args.To,
 		})
 		if err != nil {
 			logger.Fatalf("unable to setup S3: %v", err)

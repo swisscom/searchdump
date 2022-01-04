@@ -12,16 +12,22 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
 var _ Sourcer = (*Search)(nil)
 
 type Search struct {
-	url    *url.URL
-	client *elasticsearch.Client
-	logger *logrus.Logger
+	url        *url.URL
+	client     *elasticsearch.Client
+	logger     *logrus.Logger
+	params     SearchParams
+	searchInfo *SearchInfo
+	verMajor   *int
 }
 
 type Version struct {
@@ -44,14 +50,20 @@ type SearchInfo struct {
 	Tagline     string  `json:"tagline"`
 }
 
-func (s Search) String() string {
-	if s.client == nil {
+func (s *Search) String() string {
+	if s.searchInfo == nil {
 		return ""
 	}
+	return fmt.Sprintf("%s (%s) - %s",
+		s.searchInfo.Name,
+		s.searchInfo.ClusterName,
+		s.searchInfo.Version.Number)
+}
 
+func (s *Search) fetchSearchInfo() error {
 	res, err := s.client.Info()
 	if err != nil {
-		return fmt.Sprintf("cannot fetch info")
+		return fmt.Errorf("cannot fetch info")
 	}
 
 	var esInfo SearchInfo
@@ -59,13 +71,18 @@ func (s Search) String() string {
 	err = dec.Decode(&esInfo)
 
 	if err != nil {
-		return "Search (no info)"
+		s.searchInfo = &esInfo
 	}
 
-	return fmt.Sprintf("%s (%s) - %s", esInfo.Name, esInfo.ClusterName, esInfo.Version.Number)
+	return err
 }
 
-func NewSearch(from string, logger *logrus.Logger) (*Search, error) {
+type SearchParams struct {
+	IndexFilter string
+	Size        int
+}
+
+func NewSearch(from string, params *SearchParams, logger *logrus.Logger) (*Search, error) {
 	u, err := url.Parse(from)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse URL: %v", err)
@@ -94,6 +111,20 @@ func NewSearch(from string, logger *logrus.Logger) (*Search, error) {
 		url:    u,
 		client: client,
 		logger: logger,
+	}
+
+	if params != nil {
+		s.params = *params
+	} else {
+		s.params = SearchParams{
+			IndexFilter: "",
+			Size: 50,
+		}
+	}
+
+	err = s.fetchSearchInfo()
+	if err != nil {
+		return nil, fmt.Errorf("cannot fetch search info: %v", err)
 	}
 
 	return &s, nil
@@ -131,8 +162,22 @@ func (s *Search) getIndices() ([]string, error) {
 		return nil, err
 	}
 
+	var re *regexp.Regexp
+	if s.params.IndexFilter != "" {
+		re, err = regexp.Compile(s.params.IndexFilter)
+		if err != nil {
+			return nil, fmt.Errorf("unable to compile regexp: %v", err)
+		}
+	}
+
 	for k, _ := range indicesStats.Indices {
-		indices = append(indices, k)
+		if re != nil {
+			if re.MatchString(k) {
+				indices = append(indices, k)
+			}
+		} else {
+			indices = append(indices, k)
+		}
 	}
 
 	sort.Strings(indices)
@@ -171,10 +216,17 @@ type Hits struct {
 	HitsEntries []HitsEntry `json:"hits"`
 }
 
+type Pit struct {
+	Id        string `json:"id"`
+	KeepAlive string `json:"keep_alive"`
+}
+
 type Result struct {
-	Took     int  `json:"took"`
-	TimedOut bool `json:"timed_out"`
-	Hits     Hits `json:"hits"`
+	Took     int    `json:"took"`
+	TimedOut bool   `json:"timed_out"`
+	Hits     Hits   `json:"hits"`
+	Pit      Pit    `json:"pit"`
+	ScrollId string `json:"_scroll_id"`
 }
 
 type SearchServerError struct {
@@ -187,26 +239,45 @@ func (s SearchServerError) Error() string {
 
 var _ error = (*SearchServerError)(nil)
 
-func (s *Search) fetch(index string, size int, offset int) ([]Document, error) {
+/*
+	fetch the documents for the given index and returns:
+	- an array of documents for this batch
+	- a scroll ID
+	- an error (if any)
+*/
+func (s *Search) fetch(index string, size int, scrollId string) ([]Document, string, error) {
 	c := context.Background()
-	res, err := esapi.SearchRequest{
-		Index: []string{index},
-		From:  &offset,
-		Size:  &size,
-	}.Do(c, s.client)
-	if err != nil {
-		return nil, err
-	}
+	var res *esapi.Response
+	var err error
 
+	scrollTime := 2 * time.Minute
+
+	if scrollId == "" {
+		// First is search
+		res, err = esapi.SearchRequest{
+			Index:  []string{index},
+			Size:   &size,
+			Scroll: scrollTime,
+			Sort:   []string{"_doc"}, // "Scroll requests have optimizations that make them faster when the sort order is _doc."
+		}.Do(c, s.client)
+	} else {
+		res, err = esapi.ScrollRequest{
+			ScrollID: scrollId,
+			Scroll:   scrollTime,
+		}.Do(c, s.client)
+	}
+	if err != nil {
+		return nil, scrollId, err
+	}
 	if res.StatusCode != http.StatusOK {
-		return nil, SearchServerError{StatusCode: res.StatusCode}
+		return nil, scrollId, SearchServerError{StatusCode: res.StatusCode}
 	}
 
 	var result Result
 	j := json.NewDecoder(res.Body)
 	err = j.Decode(&result)
 	if err != nil {
-		return nil, fmt.Errorf("unable to decode JSON: %v", err)
+		return nil, scrollId, fmt.Errorf("unable to decode JSON: %v", err)
 	}
 
 	var documents []Document
@@ -215,9 +286,44 @@ func (s *Search) fetch(index string, size int, offset int) ([]Document, error) {
 		documents = append(documents, e.Source)
 	}
 
-	return documents, nil
+	return documents, result.ScrollId, nil
 }
 
+type PitResponse struct {
+	Id string `json:"id"`
+}
+
+func (s *Search) versionMajor() int {
+	if s.verMajor != nil {
+		return *s.verMajor
+	}
+
+	if s.searchInfo == nil {
+		return -1
+	}
+
+	strSplit := strings.Split(s.searchInfo.Version.Number, ".")
+	if len(strSplit) == 1 {
+		return -1
+	}
+
+	major, err := strconv.ParseInt(strSplit[0], 10, 32)
+	if err != nil {
+		return -1
+	}
+
+	majorInt := int(major)
+	s.verMajor = &majorInt
+
+	return majorInt
+}
+
+/*
+	fetchAndSend fetches the documents using the Scroll API
+	(ElasticSearch 6.x)
+
+	https://www.elastic.co/guide/en/elasticsearch/reference/6.8/search-request-scroll.html
+*/
 func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 	size := 50
 	offset := 0
@@ -228,8 +334,13 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 	currentRetry := 0
 	maxRetries := 2
 
+	var scrollId string
+
 	for {
-		entries, err := s.fetch(index, size, offset)
+		var entries []Document
+		var err error
+
+		entries, scrollId, err = s.fetch(index, size, scrollId)
 		if err != nil {
 			searchServerError, ok := err.(SearchServerError)
 			if currentRetry == maxRetries {
@@ -285,4 +396,27 @@ func (s *Search) do(ch chan<- file.File, indices []string) {
 	}
 
 	close(ch)
+}
+
+func (s Search) createPit(index string) (interface{}, interface{}) {
+	pitRes, err := esapi.OpenPointInTimeRequest{
+		Index:     []string{index},
+		KeepAlive: "60m",
+	}.Do(context.Background(), s.client)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open PIT: %v", err)
+	}
+
+	var pitResponseBody map[string]interface{}
+	dec := json.NewDecoder(pitRes.Body)
+	err = dec.Decode(&pitResponseBody)
+	if err != nil {
+		return nil, err
+	}
+
+	if pitRes.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("cannot create PIT, server returned %d", pitRes.StatusCode)
+	}
+
+	return pitResponseBody, nil
 }

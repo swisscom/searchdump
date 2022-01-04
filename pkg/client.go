@@ -25,12 +25,17 @@ func New() Client {
 	}
 }
 
-func (c *Client) SetFrom(fromType string, from string) error {
+func (c *Client) SetFrom(fromType string, from string, fromParams interface{}) error {
 	switch strings.ToLower(fromType) {
 	case "elasticsearch", "opensearch", "search":
 		var err error
 		c.FromType = FromSearch
-		c.From, err = source.NewSearch(from, c.logger)
+		params, ok := fromParams.(*source.SearchParams)
+		if !ok {
+			return fmt.Errorf("params is not *SearchParams")
+		}
+
+		c.From, err = source.NewSearch(from, params, c.logger)
 		if err != nil {
 			return err
 		}
