@@ -354,69 +354,82 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 	currentRetry := 0
 	maxRetries := 2
 
-	var scrollId string
+	fetchChan := make(chan Document)
 
-	for {
-		var entries []Document
-		var err error
+	go func() {
+		var scrollId string
+		for {
+			var entries []Document
+			var err error
 
-		entries, scrollId, err = s.fetch(index, size, scrollId)
+			if offset % (5 * size) == 0 {
+				s.logger.Infof("[fetch] index=%s is at offset=%d", index, offset)
+			}
+
+			entries, scrollId, err = s.fetch(index, size, scrollId)
+			if err != nil {
+				searchServerError, ok := err.(SearchServerError)
+				if currentRetry == maxRetries {
+					s.logger.Errorf(
+						"search server error: cannot proceed further, our last retry failed: %v. Skipping %s",
+						searchServerError,
+						index,
+					)
+					return
+				}
+				if ok {
+					s.logger.Warnf("search server error: %v, retrying offset=%d, size=%d (%d/%d)",
+						searchServerError,
+						offset,
+						size,
+						currentRetry,
+						maxRetries,
+					)
+					currentRetry++
+
+					// Sleep for e^(currentRetry) seconds
+					d := time.Duration(math.Round(math.Pow(math.E, float64(currentRetry)))) * time.Second
+					time.Sleep(d)
+					continue
+				}
+				s.logger.Fatalf("unable to fetch: index=%s, size=%d, offset=%d: %v", index, size, offset, err)
+			}
+			currentRetry = 0
+			if len(entries) == 0 {
+				break
+			}
+
+			for _, e := range entries {
+				fetchChan <- e
+			}
+
+			offset += size
+		}
+		// Finish streaming by closing the channel
+		close(fetchChan)
+	}()
+
+	for e := range fetchChan {
+		content, err := json.Marshal(e.Content)
 		if err != nil {
-			searchServerError, ok := err.(SearchServerError)
-			if currentRetry == maxRetries {
-				s.logger.Errorf(
-					"search server error: cannot proceed further, our last retry failed: %v. Skipping %s",
-					searchServerError,
-					index,
-				)
-				return
-			}
-			if ok {
-				s.logger.Warnf("search server error: %v, retrying offset=%d, size=%d (%d/%d)",
-					searchServerError,
-					offset,
-					size,
-					currentRetry,
-					maxRetries,
-				)
-				currentRetry++
-
-				// Sleep for e^(currentRetry) seconds
-				d := time.Duration(math.Round(math.Pow(math.E, float64(currentRetry)))) * time.Second
-				time.Sleep(d)
-				continue
-			}
-			s.logger.Fatalf("unable to fetch: index=%s, size=%d, offset=%d: %v", index, size, offset, err)
+			s.logger.Errorf("unable to marshal content of document %s: %v", e.Id, err)
+			continue
 		}
-		currentRetry = 0
-		if len(entries) == 0 {
-			break
+		err = tw.WriteHeader(&tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     fmt.Sprintf("%s.json", e.Id),
+			Size:     int64(len(content)),
+		})
+		if err != nil {
+			s.logger.Errorf("unable to write header for %s: %v", e.Id, err)
+			continue
 		}
 
-		for _, e := range entries {
-			content, err := json.Marshal(e.Content)
-			if err != nil {
-				s.logger.Errorf("unable to marshal content of document %s: %v", e.Id, err)
-				continue
-			}
-			err = tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeReg,
-				Name:     fmt.Sprintf("%s.json", e.Id),
-				Size:     int64(len(content)),
-			})
-			if err != nil {
-				s.logger.Errorf("unable to write header for %s: %v", e.Id, err)
-				continue
-			}
-
-			_, err = tw.Write(content)
-			if err != nil {
-				s.logger.Errorf("unable to write file %s: %v", e.Id, err)
-				continue
-			}
+		_, err = tw.Write(content)
+		if err != nil {
+			s.logger.Errorf("unable to write file %s: %v", e.Id, err)
+			continue
 		}
-
-		offset += size
 	}
 
 	tw.Close()
