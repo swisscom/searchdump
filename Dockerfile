@@ -5,4 +5,5 @@ RUN CGO_ENABLED=0 go build -o /searchdump ./cmd/searchdump
 
 FROM alpine:3.15
 COPY --from=builder /searchdump /usr/bin/searchdump
+RUN apk add --no-cache tmux htop curl
 ENTRYPOINT ["/usr/bin/searchdump"]
