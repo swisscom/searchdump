@@ -25,10 +25,9 @@ Options:
 
 ### Sources
 
-- ElasticSearch (v6, v7, v8)
+- ElasticSearch (v6, v7)
 - OpenSearch (v1)
 
 ### Dest
 
 - AWS S3 compatible storage (e.g: MinIO, AWS S3)
-
