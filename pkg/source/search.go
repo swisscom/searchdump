@@ -218,9 +218,46 @@ type HitsEntry struct {
 	Source DocumentContent `json:"_source"`
 }
 
+type HitsTotalCount struct {
+	Value int
+}
+
+type ES7HitsTotalCount struct {
+	Value    int    `json:"value"`
+	Relation string `json:"relation"`
+}
+
+func (h *HitsTotalCount) UnmarshalJSON(i []byte) error {
+	// input can either be:
+	//	{
+	//    "value" : 2207,
+	//    "relation" : "eq"
+	//  }
+	// or:
+	// 2207
+
+	var es7HitsTotalCount ES7HitsTotalCount
+	var err error
+	err = json.Unmarshal(i, &es7HitsTotalCount)
+	if err != nil {
+		// Might be an int
+		var v int
+		err = json.Unmarshal(i, &v)
+		if err != nil {
+			return err
+		}
+		h.Value = v
+		return nil
+	}
+	h.Value = es7HitsTotalCount.Value
+	return nil
+}
+
+var _ json.Unmarshaler = (*HitsTotalCount)(nil)
+
 type Hits struct {
-	Total       int         `json:"total"`
-	HitsEntries []HitsEntry `json:"hits"`
+	Total       HitsTotalCount `json:"total"`
+	HitsEntries []HitsEntry    `json:"hits"`
 }
 
 type Pit struct {
@@ -362,7 +399,7 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 			var entries []Document
 			var err error
 
-			if offset % (5 * size) == 0 {
+			if offset%(5*size) == 0 {
 				s.logger.Infof("[fetch] index=%s is at offset=%d", index, offset)
 			}
 
@@ -419,6 +456,7 @@ func (s *Search) fetchAndSend(index string, c chan<- file.File) {
 			Typeflag: tar.TypeReg,
 			Name:     fmt.Sprintf("%s.json", e.Id),
 			Size:     int64(len(content)),
+			Mode:     0644,
 		})
 		if err != nil {
 			s.logger.Errorf("unable to write header for %s: %v", e.Id, err)
