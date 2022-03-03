@@ -43,9 +43,9 @@ func main() {
 	switch args.FromType {
 	case "search", "elasticsearch", "opensearch":
 		err = client.SetFrom(args.FromType, args.From, &source.SearchParams{
-		IndexFilter: args.SearchIndexFilter,
-		Size: args.SearchSize,
-	})
+			IndexFilter: args.SearchIndexFilter,
+			Size:        args.SearchSize,
+		})
 	default:
 		logger.Fatalf("%s not recognized", args.FromType)
 	}

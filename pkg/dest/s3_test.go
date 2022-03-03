@@ -29,4 +29,3 @@ func TestNewS3(t *testing.T) {
 		t.Fatalf("unable to upload: %v", err)
 	}
 }
-

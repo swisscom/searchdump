@@ -20,8 +20,8 @@ type Client struct {
 func New() Client {
 	return Client{
 		FromType: FromNone,
-		To: dest.NoneDest{},
-		logger: logrus.New(),
+		To:       dest.NoneDest{},
+		logger:   logrus.New(),
 	}
 }
 
@@ -68,7 +68,6 @@ func (c *Client) Start() error {
 		c.logger.Infof("wrote %s", f.Name)
 	}
 
-
 	if err != nil {
 		return fmt.Errorf("unable to start fetching: %v", err)
 	}
@@ -82,7 +81,6 @@ func (c *Client) SetTo(toType string, params interface{}) error {
 		if !ok {
 			return fmt.Errorf("cannot cast to S3Params")
 		}
-
 
 		s3Dest, err := dest.NewS3(v)
 		if err != nil {

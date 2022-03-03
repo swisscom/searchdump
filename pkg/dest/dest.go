@@ -11,7 +11,8 @@ type Dester interface {
 }
 
 var _ Dester = (*NoneDest)(nil)
-type NoneDest struct {}
+
+type NoneDest struct{}
 
 func (n NoneDest) Write(f file.File) error {
 	return fmt.Errorf("I cannot be used to write files")
@@ -20,4 +21,3 @@ func (n NoneDest) Write(f file.File) error {
 func (n NoneDest) String() string {
 	return "none"
 }
-
