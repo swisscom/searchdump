@@ -9,6 +9,8 @@ A simple tool to backup *Search (e.g: ElasticSearch / OpenSearch) to multiple de
 - Golang (v1.17+)
 - Make
 
+### Instructions
+
 ```bash
 make build
 ./build/searchdump -h
