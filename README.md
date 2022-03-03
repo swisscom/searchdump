@@ -2,6 +2,20 @@
 
 A simple tool to backup *Search (e.g: ElasticSearch / OpenSearch) to multiple destinations
 
+## Building
+
+### Requirements
+
+- Golang (v1.17+)
+- Make
+
+```bash
+make build
+./build/searchdump -h
+```
+
+## Running
+
 ```bash
 $ searchdump -h
 Usage: searchdump --from FROM --from-type FROM-TYPE --to TO --to-type TO-TYPE [--debug] [--s3-access-key S3-ACCESS-KEY] [--s3-secret-access-key S3-SECRET-ACCESS-KEY] [--s3-namespace S3-NAMESPACE] [--s3-endpoint S3-ENDPOINT] [--s3-force-path-style] [--s3-region S3-REGION]
@@ -31,3 +45,9 @@ Options:
 ### Dest
 
 - AWS S3 compatible storage (e.g: MinIO, AWS S3)
+
+## Project Status
+
+Early stage - it works but it's limited.  
+  
+PRs are welcome.
